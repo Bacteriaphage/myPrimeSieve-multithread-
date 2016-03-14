@@ -10,7 +10,7 @@
 #endif
 
 typedef char			   _u8;
-typedef unsigned int       _uint;
+typedef unsigned long long _uint;
 typedef unsigned long long _ulong;
 
 #endif

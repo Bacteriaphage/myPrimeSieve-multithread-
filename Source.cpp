@@ -2,7 +2,7 @@
 * Title      :Fast_Sieve
 * Written by :Hanyu Zhang, Yunfei Lu
 * Date       :03/15/2016
-* Description:This program aims to count number of primes in a large domain. It can 
+* Description:This program aims to count number of primes in a large domain. It can
 * exclude all primes which contain digit "7".
 ************************************************************************************/
 
@@ -11,14 +11,19 @@
 #include <cmath>
 #include "config.h"
 #include "next_7_finder.h"
+#include <thread>
+#include <mutex>
+#include <omp.h>
 using namespace std;
 
+mutex mtx;
 extern const unsigned char mask_16[65536];
 extern _u8 digits[4][20];
 extern bool consecutive[4];
 extern _ulong low[4], high[4];
 
-//mark_mask is used to make pattern, crossoff non-prime and test 
+
+//mark_mask is used to make pattern, crossoff non-prime and test
 //reference: http://sweet.ua.pt/tos/software/prime_sieve.html
 const _ulong mark_mask[64u] =
 {
@@ -46,10 +51,10 @@ const _ulong mark_mask[64u] =
 # define test_2(s,o)  (((s)[(o) >> 6u] & mark_mask[(o) & 63u]) == 0ull)
 # define unmark(s,o)  (s)[(o) >> 6u] &= ~mark_mask[(o) & 63u]
 
-_ulong pattern[3u * 5u * 7u * 11u * 13u];  // sieve initialization pattern
+_ulong pattern[4][3u * 5u * 7u * 11u * 13u];  // sieve initialization pattern
 
-//deal with small sieve_limit
-_uint smallprime[40]=
+											  //deal with small sieve_limit
+_uint smallprime[40] =
 {
 	2,  3,  5,  11,  13,  19,
 	23, 29, 31, 41,  43,
@@ -60,21 +65,21 @@ _uint smallprime[40]=
 	241,251,263,269,281, 283
 };
 
-void init_pattern() {
+void init_pattern(_uint mul) {
 	_uint i;
 
 	for (i = 0u;i < 3u * 5u * 7u * 11u * 13u;i++)
-		pattern[i] = (_ulong)0u;
+		pattern[mul][i] = (_ulong)0u;
 	for (i = (3u >> 1u);i < 3u * 5u * 7u * 11u * 13u * 8u * _pointer_size_;i += 3u)
-		mark_2(pattern, i);
+		mark_2(pattern[mul], i);
 	for (i = (5u >> 1u);i < 3u * 5u * 7u * 11u * 13u * 8u * _pointer_size_;i += 5u)
-		mark_2(pattern, i);
+		mark_2(pattern[mul], i);
 	for (i = (7u >> 1u);i < 3u * 5u * 7u * 11u * 13u * 8u * _pointer_size_;i += 7u)
-		mark_2(pattern, i);
+		mark_2(pattern[mul], i);
 	for (i = (11u >> 1u);i < 3u * 5u * 7u * 11u * 13u * 8u * _pointer_size_;i += 11u)
-		mark_2(pattern, i);
+		mark_2(pattern[mul], i);
 	for (i = (13u >> 1u);i < 3u * 5u * 7u * 11u * 13u * 8u * _pointer_size_;i += 13u)
-		mark_2(pattern, i);
+		mark_2(pattern[mul], i);
 }
 
 //Bucket data structure can store prime and offset of current prime in next sieve segment
@@ -105,15 +110,15 @@ public:
 	}
 };
 
-Bucket_List* availible_buck = nullptr;
+Bucket_List* availible_buck[4] = { nullptr ,nullptr, nullptr, nullptr };
 
-Bucket_List* create_Bucket() {
-	if (availible_buck == nullptr) {
-		availible_buck = new Bucket_List;
-		return availible_buck;
+Bucket_List* create_Bucket(_uint mul) {
+	if (availible_buck[mul] == nullptr) {
+		availible_buck[mul] = new Bucket_List;
+		return availible_buck[mul];
 	}
 	else {
-		Bucket_List * process = availible_buck;
+		Bucket_List * process = availible_buck[mul];
 		for (;process->next != nullptr; process = process->next);
 		process->next = new Bucket_List;
 		return process->next;
@@ -122,8 +127,12 @@ Bucket_List* create_Bucket() {
 
 _ulong sieve_base;
 _ulong sieve_limit;
-_ulong sieve[4][_sieve_word_];
-_ulong prime_counter[4] = {0, 0, 0 ,0};
+_ulong sieve1[_sieve_word_];
+_ulong sieve2[_sieve_word_];
+_ulong sieve3[_sieve_word_];
+_ulong sieve4[_sieve_word_];
+
+_ulong prime_counter[4] = { 0, 0, 0 ,0 };
 
 //use auxiliary sieve to generate Bucket_List
 _uint aux_bound;
@@ -152,40 +161,40 @@ inline _uint find_next_offset(_ulong this_sieve_base, _uint prime) {
 }
 
 //use pattern and Eratosthenes sieve to generate auxiliary sieve array and Bucket
-void bucketGenerator() {
-	_uint k;
-	Bucket_List *b = availible_buck;
-	if (b != nullptr)
-		for (; b->next != nullptr; b = b->next);
-	init_pattern();
-	for (int i = 0u;i < aux_sieve_words;i += k)
-	{
-		int j = aux_sieve_words - i;            // remaining sieve words
-		k = 3u * 5u * 7u * 11u * 13u;           // remaining pattern words
-		if (j < k)
-			k = j;
-		for (j = 0u;j < k;j++)
-			aux_sieve[i + j] = pattern[j];
-	}
-	_uint next_prime = 17;
-	_uint li;
-	while (next_prime < aux_bound) {
-		li = next_prime / 2u;
-		if (test_2(aux_sieve, li)) {
-			if (b == nullptr || b->size == ((1u << 9u) - 1u)) {
-				b = create_Bucket();
-			}
-			_uint o = find_next_offset(sieve_base,next_prime);
-			b->addBucket(next_prime, o);
-			for (_uint i = (next_prime >> 1u);i < (aux_bound >> 1u);i += next_prime)
-				mark_2(aux_sieve, i);
+void bucketGenerator(_ulong this_sieve_base, _uint index) {
+		_uint k;
+		Bucket_List *b = availible_buck[index];
+		if (b != nullptr)
+			for (; b->next != nullptr; b = b->next);
+		init_pattern(index);
+		for (int i = 0u;i < aux_sieve_words;i += k)
+		{
+			int j = aux_sieve_words - i;            // remaining sieve words
+			k = 3u * 5u * 7u * 11u * 13u;           // remaining pattern words
+			if (j < k)
+				k = j;
+			for (j = 0u;j < k;j++)
+				aux_sieve[i + j] = pattern[index][j];
 		}
-		next_prime += 2;
-	}
+		_uint next_prime = 17;
+		_uint li;
+		while (next_prime < aux_bound) {
+			li = next_prime / 2u;
+			if (test_2(aux_sieve, li)) {
+				if (b == nullptr || b->size == ((1u << 9u) - 1u)) {
+					b = create_Bucket(index);
+				}
+				_uint o = find_next_offset(this_sieve_base, next_prime);
+				b->addBucket(next_prime, o);
+				for (_uint i = (next_prime >> 1u);i < (aux_bound >> 1u);i += next_prime)
+					mark_2(aux_sieve, i);
+			}
+			next_prime += 2;
+		}
 }
 
 
-void init_sieve(_ulong this_sieve_base, _ulong sieve_span, _ulong sieve[]) {
+void init_sieve(_ulong this_sieve_base, _ulong sieve_span, _ulong sieve[], _uint mul) {
 	_uint offset;
 	_uint k;
 	_uint j;
@@ -198,7 +207,7 @@ void init_sieve(_ulong this_sieve_base, _ulong sieve_span, _ulong sieve[]) {
 			if (j < k)
 				k = j;
 			for (j = 0u;j < k;j++)
-				sieve[i + j] = pattern[offset + j];
+				sieve[i + j] = pattern[mul][offset + j];
 			offset = 0u;
 		}
 	}
@@ -209,21 +218,21 @@ void init_sieve(_ulong this_sieve_base, _ulong sieve_span, _ulong sieve[]) {
 			if (j < k)
 				k = j;
 			for (j = 0u;j < k;j++)
-				sieve[i + j] = pattern[offset + j];
+				sieve[i + j] = pattern[mul][offset + j];
 			offset = 0u;
 		}
 	}
 }
 
 //crossoff every number containing 7
-void crossoff_7(_ulong this_sieve_base, _uint this_sieve_span,_ulong sieve[], _uint mul) {
+void crossoff_7(_ulong this_sieve_base, _uint this_sieve_span, _ulong sieve[], _uint mul) {
 	_ulong next;
 	_uint  offset;
 	_ulong this_sieve_limit = this_sieve_base + this_sieve_span * 128;
 	next = init_finder(this_sieve_base, mul);
-	while (next < this_sieve_limit) {
+	while (next < this_sieve_limit && next < sieve_limit) {
 		if (consecutive[mul] == true) {
-			for (_ulong num = (low[mul] /2)*2+1; (num < high[mul]) && (num < this_sieve_limit); num += 2) {
+			for (_ulong num = (low[mul] / 2) * 2 + 1; (num < high[mul]) && (num < this_sieve_limit); num += 2) {
 				offset = ((num - this_sieve_base) / 2);
 				mark_2(sieve, offset);
 			}
@@ -235,7 +244,7 @@ void crossoff_7(_ulong this_sieve_base, _uint this_sieve_span,_ulong sieve[], _u
 }
 
 //count number of primes in one segment
-_ulong count(_uint this_sieve_span, _ulong sieve[]) {
+_ulong count(_ulong this_sieve_base, _ulong this_sieve_limit, _uint this_sieve_span, _ulong sieve[]) {
 	_uint index = 0;
 	_ulong now;
 	_ulong zero = 0;
@@ -257,7 +266,7 @@ _ulong count(_uint this_sieve_span, _ulong sieve[]) {
 				now = now >> 16u;
 			}
 		}
-		_uint offset = ((sieve_limit - sieve_base) / 2) % 64;
+		_uint offset = ((this_sieve_limit - this_sieve_base) / 2) % 64;
 		now = sieve[this_sieve_span - 1];
 		for (;offset > 0; offset--) {
 			if ((now | 0xfffffffffffffffe) == 0xfffffffffffffffe)
@@ -268,9 +277,9 @@ _ulong count(_uint this_sieve_span, _ulong sieve[]) {
 	return zero;
 }
 
-_ulong start_sieve(_ulong this_sieve_base, _ulong sieve_span, _ulong sieve[], _uint mul) {
-	init_sieve(this_sieve_base, sieve_span, sieve);
-	Bucket_List *doIt = availible_buck;
+_ulong start_sieve(_ulong this_sieve_base, _ulong this_sieve_limit ,_ulong sieve_span, _ulong sieve[], _uint mul) {
+	init_sieve(this_sieve_base, sieve_span, sieve, mul);
+	Bucket_List *doIt = availible_buck[mul];
 	_uint prime_index = 0;
 	_uint this_sieve_span;
 	if (sieve_span > _sieve_word_) {
@@ -295,81 +304,117 @@ _ulong start_sieve(_ulong this_sieve_base, _ulong sieve_span, _ulong sieve[], _u
 		}
 		else prime_index++;
 	}
-	crossoff_7(this_sieve_base, this_sieve_span, sieve, mul);
-	return count(this_sieve_span, sieve);
+	//    crossoff_7(this_sieve_base, this_sieve_span, sieve, mul);
+	return count(this_sieve_base, this_sieve_limit, this_sieve_span, sieve);
 }
 
 bool multienable[4] = { true, true, true, true };
 
-void multisieve1() {
+void multisieve1(_ulong sieve_base, _ulong sieve_limit) {
 	_ulong this_sieve_base = sieve_base;
 	_ulong sieve_span = (sieve_limit - this_sieve_base) / 128u + 1u;
-	for (_uint i = 0; i < ((sieve_limit - sieve_base) / 128u + 1u) / _sieve_word_ + 1u; i++) {
+	bucketGenerator(sieve_base, 0);
+	for (_uint i = 0; i < ((sieve_limit - sieve_base) / 128u + 1u) / _sieve_word_ + 1u; i ++) {
 		init_finder(this_sieve_base, 0);
-		if ((consecutive[0] == 1) && high[0] >(this_sieve_base + _sieve_word_ * 128) && this_sieve_base == low[0]) continue;
-		prime_counter[0] += start_sieve(this_sieve_base, sieve_span, sieve[0], 0);
-		this_sieve_base += _sieve_word_ * 128;
+//		if ((consecutive[0] == 1) && high[0] >(this_sieve_base + _sieve_word_ * 128) && this_sieve_base == low[0]) continue;
+		prime_counter[0] += start_sieve(this_sieve_base, sieve_limit, sieve_span, sieve1, 0);
+		this_sieve_base +=  _sieve_word_ * 128;
 		sieve_span = (sieve_limit - this_sieve_base) / 128u + 1u;
 	}
+	return;
 }
-void multisieve2() {
-	_ulong this_sieve_base = sieve_base + _sieve_word_ * 128;
+void multisieve2(_ulong sieve_base, _ulong sieve_limit) {
+	bucketGenerator(sieve_base, 1);
+	_ulong this_sieve_base = sieve_base;
 	_ulong sieve_span = (sieve_limit - this_sieve_base) / 128u + 1u;
-	for (_uint i = 1; i < ((sieve_limit - sieve_base) / 128u + 1u) / _sieve_word_ + 1u; i+=4) {
+	for (_uint i = 0; i < ((sieve_limit - sieve_base) / 128u + 1u) / _sieve_word_ + 1u; i ++) {
 		init_finder(this_sieve_base, 1);
-		if ((consecutive[1] == 1) && high[1] >(this_sieve_base + _sieve_word_ * 128) && this_sieve_base == low[1]) continue;
-		prime_counter[1] += start_sieve(this_sieve_base, sieve_span, sieve[1], 1);
-		this_sieve_base += _sieve_word_ * 128;
+//		if ((consecutive[1] == 1) && high[1] >(this_sieve_base + _sieve_word_ * 128) && this_sieve_base == low[1]) continue;
+		prime_counter[1] += start_sieve(this_sieve_base, sieve_limit, sieve_span, sieve2, 1);
+		this_sieve_base +=  _sieve_word_ * 128;
 		sieve_span = (sieve_limit - this_sieve_base) / 128u + 1u;
 	}
+	return;
 }
-void multisieve3() {
-	_ulong this_sieve_base = sieve_base + 2 * _sieve_word_ * 128;
+void multisieve3(_ulong sieve_base, _ulong sieve_limit) {
+	bucketGenerator(sieve_base, 2);
+	_ulong this_sieve_base = sieve_base;
 	_ulong sieve_span = (sieve_limit - this_sieve_base) / 128u + 1u;
-	for (_uint i = 2; i < ((sieve_limit - sieve_base) / 128u + 1u) / _sieve_word_ + 1u; i+=4) {
+	for (_uint i = 0; i < ((sieve_limit - sieve_base) / 128u + 1u) / _sieve_word_ + 1u; i ++) {
 		init_finder(this_sieve_base, 2);
-		if ((consecutive[2] == 1) && high[0] >(this_sieve_base + _sieve_word_ * 128) && this_sieve_base == low[2]) continue;
-		prime_counter[2] += start_sieve(this_sieve_base, sieve_span, sieve[2], 2);
-		this_sieve_base += _sieve_word_ * 128;
+//		if ((consecutive[2] == 1) && high[2] >(this_sieve_base + _sieve_word_ * 128) && this_sieve_base == low[2]) continue;
+		prime_counter[2] += start_sieve(this_sieve_base, sieve_limit, sieve_span, sieve3, 2);
+		this_sieve_base +=  _sieve_word_ * 128;
 		sieve_span = (sieve_limit - this_sieve_base) / 128u + 1u;
+
 	}
+	return;
 }
-void multisieve4() {
-	_ulong this_sieve_base = sieve_base + 3 * _sieve_word_ * 128;
+void multisieve4(_ulong sieve_base, _ulong sieve_limit) {
+	bucketGenerator(sieve_base, 3);
+	_ulong this_sieve_base = sieve_base;
 	_ulong sieve_span = (sieve_limit - this_sieve_base) / 128u + 1u;
-	for (_uint i = 3; i < ((sieve_limit - sieve_base) / 128u + 1u) / _sieve_word_ + 1u; i+=4) {
+	for (_uint i = 0; i < ((sieve_limit - sieve_base) / 128u + 1u) / _sieve_word_ + 1u; i ++) {
 		init_finder(this_sieve_base, 3);
-		if ((consecutive[3] == 1) && high[3] >(this_sieve_base + _sieve_word_ * 128) && this_sieve_base == low[3]) continue;
-		prime_counter[3] += start_sieve(this_sieve_base, sieve_span, sieve[3], 0);
-		this_sieve_base += _sieve_word_ * 128;
+//		if ((consecutive[3] == 1) && high[3] >(this_sieve_base + _sieve_word_ * 128) && this_sieve_base == low[3]) continue;
+		prime_counter[3] += start_sieve(this_sieve_base, sieve_limit, sieve_span, sieve4, 3);
+		this_sieve_base +=  _sieve_word_ * 128;
 		sieve_span = (sieve_limit - this_sieve_base) / 128u + 1u;
 	}
+	return;
 }
 int main() {
-	sieve_base = 110000000u;
-	sieve_limit = 120000000u;
+	sieve_base = 0u;
+	sieve_limit = 30000000000u;
 	aux_bound = sqrt(sieve_limit) + 1;
 	aux_sieve = new _ulong[aux_bound / 128u + 1u];
 	aux_sieve_words = aux_bound / 128u + 1u;
 	_ulong this_sieve_base = sieve_base;
 	_ulong counter = 0;
-	bucketGenerator();
-	multisieve1();
-	multisieve2();
-	multisieve3();
-	multisieve4();
+	_ulong sieve_span = (sieve_limit - sieve_base) / 128u + 1u;
+	_ulong sieve_segment = (sieve_limit - sieve_base) / 4;
+	_ulong segB[4], segL[4];
+	for (int i = 0; i < 3; i++) {
+		segL[i] = sieve_base + sieve_segment * (i+1) - 1;
+		segB[i + 1] = sieve_base + sieve_segment * (i+1);
+	}
+	segB[0] = sieve_base;
+	segL[3] = sieve_limit;
+
+#if 0
+	thread t1(multisieve1, segB[0], segL[0] + 1);
+	thread t2(multisieve2, segB[1], segL[1] + 1);
+	thread t3(multisieve3, segB[2], segL[2] + 1);
+	thread t4(multisieve4, segB[3], segL[3] + 1);
+	t1.join();
+	t2.join();
+	t3.join();
+	t4.join();
+#endif
+//#if 0
+#pragma omp parallel sections num_threads(2)
+	{
+	#pragma omp section
+	multisieve1(segB[0],segL[0]+1);
+	#pragma omp section
+	multisieve2(segB[1], segL[1]+1);
+	#pragma omp section
+	multisieve3(segB[2], segL[2]+1);
+	#pragma omp section
+	multisieve4(segB[3], segL[3]+1);
+	}
+//#endif
 	int i;
 	for (i = 0; i < 4; i++) {
 		counter += prime_counter[i];
 	}
-	cout << counter;
 #if 0
 	if (sieve_limit > 288) {
-		
+
 		for (_uint i = 0; i < ((sieve_limit - sieve_base) / 128u + 1u) / _sieve_word_ + 1u; i++) {
-			init_finder(this_sieve_base);
-			if ((consecutive == 1) && high >(this_sieve_base + _sieve_word_ * 128) && this_sieve_base == low) continue;
-			prime_counter += start_sieve(this_sieve_base, sieve_span, sieve);
+			init_finder(this_sieve_base, 0);
+			if ((consecutive[0] == 1) && high[0] >(this_sieve_base + _sieve_word_ * 128) && this_sieve_base == low[0]) continue;
+			prime_counter[0] += start_sieve(this_sieve_base, sieve_span, sieve1, 0);
 			this_sieve_base += _sieve_word_ * 128;
 			sieve_span = (sieve_limit - this_sieve_base) / 128u + 1u;
 		}
@@ -377,9 +422,8 @@ int main() {
 		for (int i = 4;i >= 1; i--) {
 			if (sieve_base < smallprime[i]) low_index++;
 		}
-		prime_counter += low_index;
-		cout << prime_counter;
-
+		prime_counter[0] += low_index;
+		cout << prime_counter[0];
 	}
 	else {
 		_uint low_index = 0;
@@ -388,11 +432,11 @@ int main() {
 			if (sieve_limit >= smallprime[i]) high_index++;
 			if (sieve_base > smallprime[i]) low_index++;
 		}
-		prime_counter = high_index - low_index;
-		cout << prime_counter;
+		prime_counter[0] = high_index - low_index;
+		cout << prime_counter[0];
 	}
-
 #endif	
+
 #if 0
 	_ulong current = 0;
 	cout << init_finder(current);
@@ -404,5 +448,11 @@ int main() {
 		cout << current << " ";
 	}
 #endif
+	_uint low_index = 0;
+	for (int i = 4;i >= 1; i--) {
+		if (sieve_base < smallprime[i]) low_index++;
+	}
+	counter += low_index;
+	cout << counter;
 	return 0;
 }
